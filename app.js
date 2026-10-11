@@ -469,11 +469,13 @@ async function importFile(file) {
   toast('Reading file…');
   try { if (!window.XLSX) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'); }
   catch (e) { return toast('Could not load the Excel reader. Check your connection.'); }
-  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+  // Dates stay as Excel serial numbers here; parseImport converts them without time-zone drift.
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
   const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
-  const txns = parseImport(rows);
+  const txns = parseImport(rows), skipped = parseImport.skipped;
   if (!txns.length) return toast('No records found in that file.');
-  if (!confirm(`Import ${txns.length} records?`)) return;
+  const note = skipped.length ? `\n\n${skipped.length} rows will be skipped:\n` + skipped.slice(0, 8).map(x => `Row ${x.row}: ${x.why}`).join('\n') + (skipped.length > 8 ? '\n…' : '') : '';
+  if (!confirm(`Import ${txns.length} records?` + note)) return;
   const newAccts = [...new Set(txns.flatMap(t => [t.account, t.toAccount]).filter(a => a && !D.accounts.some(x => x.name === a)))];
   const newCats = [];
   txns.forEach(t => { if (t.category && t.type !== 'transfer' && !D.categories.some(c => c.name === t.category && c.type === t.type) && !newCats.some(c => c.name === t.category && c.type === t.type)) newCats.push({ name: t.category, type: t.type, icon: '📦' }); });
@@ -483,29 +485,41 @@ async function importFile(file) {
   for (let i = 0; i < txns.length; i += 400) await apiSafe('import', { txns: txns.slice(i, i + 400) });
   await load(true); toast(`Imported ${txns.length} records`);
 }
-/** Money Manager export (columns found by header name). Also reads this app's own CSV export. */
+/** Money Manager export (columns found by header name). Also reads this app's own CSV export.
+ *  Rows it can't use are listed in parseImport.skipped as { row, why }. */
 function parseImport(rows) {
+  const skipped = parseImport.skipped = [];
   const hi = rows.findIndex(r => r.some(c => /^(date|period)/i.test(String(c).trim())));
   if (hi < 0) return [];
   const h = rows[hi].map(c => String(c).trim());
   const find = re => h.findIndex(c => re.test(c));
   const iDate = find(/^(date|period)/i), iTime = find(/^time$/i), iAcc = find(/^(accounts?|account)$/i), iCat = find(/^category$/i), iSub = find(/^subcategory$/i);
   const iNote = find(/^note$/i), iDesc = find(/^description$/i), iType = find(/income\/expense|^type$/i), iTo = find(/^toaccount$/i), iCur = find(/^currency$/i);
-  let iAmt = find(/^amount$/i); if (iAmt < 0) iAmt = h.findIndex(c => /^[A-Z]{3}$/.test(c));
-  const out = [];
-  rows.slice(hi + 1).forEach(r => {
-    const amount = Math.abs(parseFloat(String(r[iAmt]).replace(/[^\d.-]/g, '')));
-    if (!(amount > 0)) return;
+  const iAmt = find(/^amount$/i), iBase = h.findIndex(c => /^[A-Z]{3}$/.test(c)); // e.g. a "MYR" column
+  const body = rows.slice(hi + 1), out = [];
+  // Text dates like 05/03/2026 are ambiguous. Look at the whole file once: if any first number is over 12
+  // it's day-first; if any second number is, it's month-first; otherwise assume day-first (MY/SG style).
+  let dayFirst = true;
+  for (const r of body) {
+    const m = String(r[iDate]).match(/^\s*(\d{1,2})[\/.-](\d{1,2})[\/.-]\d{2,4}/);
+    if (!m) continue;
+    if (+m[1] > 12) { dayFirst = true; break; }
+    if (+m[2] > 12) { dayFirst = false; break; }
+  }
+  body.forEach((r, n) => {
+    const rowNo = hi + n + 2; // the row number as Excel shows it
+    if (!r.some(c => String(c).trim() !== '')) return;
+    const num = v => Math.abs(parseFloat(String(v).replace(/[^\d.-]/g, '')));
+    let amount = iAmt >= 0 ? num(r[iAmt]) : NaN;
+    if (!(amount > 0) && iBase >= 0) amount = num(r[iBase]);
+    if (!(amount > 0)) return skipped.push({ row: rowNo, why: 'no amount' });
     const rawType = String(iType >= 0 ? r[iType] : '').toLowerCase();
     if (rawType.includes('transfer') && rawType.includes('in')) return; // the "out" row already covers this transfer
     const type = rawType.startsWith('inc') ? 'income' : rawType.includes('transfer') ? 'transfer' : 'expense';
-    let d = r[iDate], time = '';
-    if (d instanceof Date) { time = pad(d.getHours()) + ':' + pad(d.getMinutes()); d = isoDate(d); }
-    else {
-      const s = String(d).trim(), m = s.match(/(\d{1,2}:\d{2})/); if (m) time = m[1].padStart(5, '0');
-      d = /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : (() => { const p = new Date(s); return isNaN(p) ? isoDate(new Date()) : isoDate(p); })();
-    }
-    if (iTime >= 0 && r[iTime]) time = String(r[iTime]).slice(0, 5);
+    const dt = importDate(r[iDate], dayFirst);
+    if (!dt) return skipped.push({ row: rowNo, why: `date not understood (${String(r[iDate]).slice(0, 20) || 'empty'})` });
+    let { date: d, time } = dt;
+    if (iTime >= 0 && r[iTime] !== '') time = typeof r[iTime] === 'number' ? importDate(r[iTime] % 1, true).time : String(r[iTime]).slice(0, 5);
     if (time === '00:00') time = '';
     const cat = String(iCat >= 0 ? r[iCat] : '').trim();
     const c = iCur >= 0 ? String(r[iCur]).trim().toUpperCase() : '';
@@ -517,6 +531,33 @@ function parseImport(rows) {
       source: 'Import', status: 'ok' });
   });
   return out;
+}
+/** Excel serial number, Date, or text → { date: 'YYYY-MM-DD', time: 'HH:MM' }, or null if unreadable. */
+function importDate(v, dayFirst) {
+  if (typeof v === 'number' && isFinite(v)) {
+    const ms = Math.round((v - 25569) * 86400) * 1000; // Excel day 25569 = 1970-01-01, read as wall-clock time
+    const u = new Date(ms);
+    if (v < 1) return { date: '', time: pad(u.getUTCHours()) + ':' + pad(u.getUTCMinutes()) };
+    return { date: u.getUTCFullYear() + '-' + pad(u.getUTCMonth() + 1) + '-' + pad(u.getUTCDate()), time: pad(u.getUTCHours()) + ':' + pad(u.getUTCMinutes()) };
+  }
+  if (v instanceof Date && !isNaN(v)) return { date: isoDate(v), time: pad(v.getHours()) + ':' + pad(v.getMinutes()) };
+  const s = String(v || '').trim();
+  const tm = s.match(/(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap]m)?/i);
+  let time = '';
+  if (tm) { let hh = +tm[1]; if (tm[3]) hh = hh % 12 + (/p/i.test(tm[3]) ? 12 : 0); time = pad(hh) + ':' + tm[2]; }
+  let y, mo, d, m;
+  if ((m = s.match(/^(\d{4})[\/.-](\d{1,2})[\/.-](\d{1,2})/))) [y, mo, d] = [+m[1], +m[2], +m[3]];
+  else if ((m = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/))) {
+    y = +m[3] < 100 ? 2000 + +m[3] : +m[3];
+    [d, mo] = dayFirst ? [+m[1], +m[2]] : [+m[2], +m[1]];
+  } else {
+    const p = new Date(s.replace(/\s*\(.*\)$/, ''));
+    if (isNaN(p)) return null;
+    return { date: isoDate(p), time };
+  }
+  const chk = new Date(Date.UTC(y, mo - 1, d));
+  if (!(mo >= 1 && mo <= 12) || chk.getUTCDate() !== d) return null; // rejects 31/04 and the like
+  return { date: y + '-' + pad(mo) + '-' + pad(d), time };
 }
 function exportCsv() {
   const cols = ['date', 'time', 'type', 'amount', 'currency', 'account', 'toAccount', 'category', 'note', 'merchant', 'source'];

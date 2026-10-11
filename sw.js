@@ -1,6 +1,6 @@
 // Caches the app's own files so it opens instantly and works offline (read-only).
 // Bump VERSION whenever you upload new app files.
-const VERSION = 'money-v1';
+const VERSION = 'money-v2';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon.png'];
 
