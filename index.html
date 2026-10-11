@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Money</title>
+<meta name="theme-color" content="#f5f7f4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121513" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Money">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/favicon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app" class="layout">
+  <aside class="side">
+    <div class="brand"><img src="icons/icon-192.png" alt=""><span>Money</span></div>
+    <button class="btn add-side" onclick="openTxn()">+ Add record</button>
+    <nav id="nav" class="nav"></nav>
+  </aside>
+  <div class="main">
+    <header id="hdr" class="hdr"></header>
+    <main id="view" class="view"><div class="loading">Loading…</div></main>
+  </div>
+  <button class="fab" id="fab" onclick="openTxn()" aria-label="Add record">+</button>
+  <nav id="tabbar" class="tabbar"></nav>
+</div>
+<div id="modal"><div class="sheet-bg" onclick="closeSheet()"></div><div class="sheet" id="sheet" role="dialog"></div></div>
+<div class="toast" id="toast" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>
